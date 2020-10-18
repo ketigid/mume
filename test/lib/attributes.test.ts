@@ -4,12 +4,12 @@ import {
   stringifyAttributes,
 } from "../../src/lib/attributes";
 
-const testCases: Array<{
+const testCases: {
   attributes?: any;
   normalizedAttributes?: any;
   raw?: string | string[];
   stringified?: string;
-}> = [
+}[] = [
   {
     // classic behavior
     attributes: { cmd: true },
@@ -194,6 +194,27 @@ const testCases: Array<{
     attributes: { cmd: true, hide: true, class: "class1 class2" },
     raw: "cmd .class1 hide .class2",
     stringified: 'cmd=true hide=true class="class1 class2"',
+  },
+  {
+    // highlight
+    attributes: { highlight: "10-20" },
+    raw: "highlight=10-20",
+    stringified: 'highlight="10-20"',
+  },
+  {
+    attributes: { highlight: ["1-10", 15, "20-22"] },
+    raw: "highlight=[1-10,15,20-22]",
+    stringified: 'highlight=["1-10", 15, "20-22"]',
+  },
+  {
+    attributes: { highlight: ["1-10", 15, "20-22"], a: 12 },
+    raw: "highlight=[1-10,15,20-22] a=12",
+    stringified: 'highlight=["1-10", 15, "20-22"] a=12',
+  },
+  {
+    attributes: { highlight: "1-10,15,20-22", a: 12 },
+    raw: 'highlight="1-10,15,20-22" a=12',
+    stringified: 'highlight="1-10,15,20-22" a=12',
   },
   {
     // normalization

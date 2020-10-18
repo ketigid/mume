@@ -1,6 +1,7 @@
 import { spawn } from "child_process";
 import * as path from "path";
 import { extensionDirectoryPath } from "./utility";
+import { getExtensionConfigPath } from "./mume";
 
 const PlantUMLJarPath = path.resolve(
   extensionDirectoryPath,
@@ -20,12 +21,12 @@ const CHUNKS: { [key: string]: string } = {};
 /**
  * key is fileDirectoryPath, value is Array
  */
-const CALLBACKS: { [key: string]: Array<(result: string) => void> } = {};
+const CALLBACKS: { [key: string]: ((result: string) => void)[] } = {};
 
 class PlantUMLTask {
   private fileDirectoryPath: string;
   private chunks: string;
-  private callbacks: Array<(result: string) => void>;
+  private callbacks: ((result: string) => void)[];
   private task;
 
   constructor(fileDirectoryPath: string) {
@@ -47,7 +48,9 @@ class PlantUMLTask {
   private startTask() {
     this.task = spawn("java", [
       "-Djava.awt.headless=true",
-      "-Dplantuml.include.path=" + this.fileDirectoryPath,
+      "-Dfile.encoding=UTF-8",
+      "-Dplantuml.include.path=" +
+        [this.fileDirectoryPath, getExtensionConfigPath()].join(path.delimiter),
       "-jar",
       PlantUMLJarPath,
       // '-graphvizdot', 'exe'
@@ -58,22 +61,24 @@ class PlantUMLTask {
     ]);
 
     this.task.stdout.on("data", (chunk) => {
-      let data = chunk.toString().trimRight(); // `trimRight()` here is necessary.
-      if (data.endsWith("</svg>")) {
-        data = this.chunks + data;
+      let data = chunk.toString();
+      this.chunks += data;
+      if (
+        this.chunks.trimRight().endsWith("</svg>") &&
+        this.chunks.match(/<svg/g).length ===
+          this.chunks.match(/<\/svg>/g).length
+      ) {
+        data = this.chunks;
         this.chunks = ""; // clear CHUNKS
-
-        const diagrams = data.split("</svg>");
+        const diagrams = data.split("<?xml ");
         diagrams.forEach((diagram, i) => {
           if (diagram.length) {
             const callback = this.callbacks.shift();
             if (callback) {
-              callback(diagram + "</svg>");
+              callback("<?xml " + diagram);
             }
           }
         });
-      } else {
-        this.chunks += data;
       }
     });
 

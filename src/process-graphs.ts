@@ -4,12 +4,16 @@ import * as path from "path";
 import { compileLaTeX } from "./code-chunk";
 import { CodeChunkData } from "./code-chunk-data";
 import { parseAttributes } from "./lib/attributes";
+import { extractCommandFromBlockInfo } from "./lib/block-info";
 import computeChecksum from "./lib/compute-checksum";
 import { svgElementToPNGFile } from "./magick";
 import * as plantumlAPI from "./puml";
 import * as vegaAPI from "./vega";
 import * as vegaLiteAPI from "./vega-lite";
 import { Viz } from "./viz";
+import * as mermaidAPI from "./mermaid";
+import * as wavedromAPI from "./wavedrom";
+import * as ditaaAPI from "./ditaa";
 
 export async function processGraphs(
   text: string,
@@ -21,6 +25,9 @@ export async function processGraphs(
     useRelativeFilePath,
     codeChunksData,
     graphsCache,
+    imageMagickPath,
+    mermaidTheme,
+    addOptionsStr,
   }: {
     fileDirectoryPath: string;
     projectDirectoryPath: string;
@@ -29,16 +36,19 @@ export async function processGraphs(
     useRelativeFilePath: boolean;
     codeChunksData: { [key: string]: CodeChunkData };
     graphsCache: { [key: string]: string };
+    imageMagickPath: string;
+    mermaidTheme: string;
+    addOptionsStr: boolean;
   },
 ): Promise<{ outputString: string; imagePaths: string[] }> {
   const lines = text.split("\n");
-  const codes: Array<{
+  const codes: {
     start: number;
     end: number;
     content: string;
     options: object;
     optionsStr: string;
-  }> = [];
+  }[] = [];
 
   let i = 0;
   while (i < lines.length) {
@@ -48,7 +58,7 @@ export async function processGraphs(
     if (
       trimmedLine.match(/^```(.+)\"?cmd\"?[:=]/) || // code chunk
       trimmedLine.match(
-        /^```(puml|plantuml|dot|viz|mermaid|vega|vega\-lite|ditaa)/,
+        /^```(puml|plantuml|dot|viz|mermaid|vega|vega\-lite|ditaa|wavedrom)/,
       )
     ) {
       // graphs
@@ -139,13 +149,15 @@ export async function processGraphs(
     start: number,
     end: number,
     modifyCodeBlock: boolean,
+    altName: string,
+    optionsStr: string,
   ) {
     if (!outFileName) {
       outFileName = imageFilePrefix + imgCount + ".png";
     }
 
     const pngFilePath = path.resolve(imageDirectoryPath, outFileName);
-    await svgElementToPNGFile(svg, pngFilePath);
+    await svgElementToPNGFile(svg, pngFilePath, imageMagickPath);
     let displayPNGFilePath;
     if (useRelativeFilePath) {
       displayPNGFilePath =
@@ -163,7 +175,16 @@ export async function processGraphs(
 
     if (modifyCodeBlock) {
       clearCodeBlock(lines, start, end);
-      lines[end] += "\n" + `![](${displayPNGFilePath})  `;
+      let altCaption = altName;
+      if (altCaption == null) {
+        altCaption = "";
+      }
+      let imageOptions = "";
+      if (addOptionsStr) {
+        imageOptions = `{${optionsStr}}`;
+      }
+      lines[end] +=
+        "\n" + `![${altCaption}](${displayPNGFilePath})${imageOptions}  `;
     }
 
     imagePaths.push(pngFilePath);
@@ -194,6 +215,8 @@ export async function processGraphs(
           start,
           end,
           true,
+          options["alt"],
+          optionsStr,
         );
       } catch (error) {
         clearCodeBlock(lines, start, end);
@@ -214,6 +237,8 @@ export async function processGraphs(
           start,
           end,
           true,
+          options["alt"],
+          optionsStr,
         );
       } catch (error) {
         clearCodeBlock(lines, start, end);
@@ -234,6 +259,8 @@ export async function processGraphs(
           start,
           end,
           true,
+          options["alt"],
+          optionsStr,
         );
       } catch (error) {
         clearCodeBlock(lines, start, end);
@@ -254,35 +281,101 @@ export async function processGraphs(
           start,
           end,
           true,
+          options["alt"],
+          optionsStr,
         );
       } catch (error) {
         clearCodeBlock(lines, start, end);
         lines[end] += `\n` + `\`\`\`\n${error}\n\`\`\`  \n`;
       }
     } else if (def.match(/^mermaid/)) {
-      // do nothing as it doesn't work well...
-      /*
+      // mermaid-cli Ver.8.4.8 has a bug, render in png https://github.com/mermaid-js/mermaid/issues/664
       try {
-        const pngFilePath = path.resolve(imageDirectoryPath, imageFilePrefix+imgCount+'.png')
-        imgCount++
-        await mermaidToPNG(content, pngFilePath)
+        const pngFilePath = path.resolve(
+          imageDirectoryPath,
+          imageFilePrefix + imgCount + ".png",
+        );
+        imgCount++;
+        await mermaidAPI.mermaidToPNG(
+          content,
+          pngFilePath,
+          projectDirectoryPath,
+          mermaidTheme,
+        );
 
-        let displayPNGFilePath
+        let displayPNGFilePath;
         if (useRelativeFilePath) {
-          displayPNGFilePath = path.relative(fileDirectoryPath, pngFilePath) + '?' + Math.random()
+          displayPNGFilePath =
+            path.relative(fileDirectoryPath, pngFilePath) + "?" + Math.random();
         } else {
-          displayPNGFilePath = '/' + path.relative(projectDirectoryPath, pngFilePath) + '?' + Math.random()
+          displayPNGFilePath =
+            "/" +
+            path.relative(projectDirectoryPath, pngFilePath) +
+            "?" +
+            Math.random();
         }
-        clearCodeBlock(lines, start, end)
-        
-        lines[end] += '\n' + `![](${displayPNGFilePath})  `
+        clearCodeBlock(lines, start, end);
 
-        imagePaths.push(pngFilePath)
-      } catch(error) {
-        clearCodeBlock(lines, start, end)
-        lines[end] += `\n` + `\`\`\`\n${error}\n\`\`\`  \n`
+        let altCaption = options["alt"];
+        if (altCaption == null) {
+          altCaption = "";
+        }
+        let imageOptions = "";
+        if (addOptionsStr) {
+          imageOptions = `{${optionsStr}}`;
+        }
+        lines[end] +=
+          "\n" + `![${altCaption}](${displayPNGFilePath})${imageOptions}  `;
+
+        imagePaths.push(pngFilePath);
+      } catch (error) {
+        clearCodeBlock(lines, start, end);
+        lines[end] += `\n` + `\`\`\`\n${error}\n\`\`\`  \n`;
       }
-      */
+    } else if (def.match(/^wavedrom/)) {
+      try {
+        const checksum = computeChecksum(optionsStr + content);
+        let svg = graphsCache[checksum];
+        if (!svg) {
+          // check whether in cache
+          svg = await wavedromAPI.render(content, projectDirectoryPath);
+        }
+        await convertSVGToPNGFile(
+          options["filename"],
+          svg,
+          lines,
+          start,
+          end,
+          true,
+          options["alt"],
+          optionsStr,
+        );
+      } catch (error) {
+        clearCodeBlock(lines, start, end);
+        lines[end] += `\n` + `\`\`\`\n${error}\n\`\`\`  \n`;
+      }
+    } else if (def.match(/^ditaa/)) {
+      try {
+        const checksum = computeChecksum(optionsStr + content);
+        let svg = graphsCache[checksum];
+        if (!svg) {
+          // check whether in cache
+          svg = await ditaaAPI.render(content, options["args"]);
+        }
+        await convertSVGToPNGFile(
+          options["filename"],
+          svg,
+          lines,
+          start,
+          end,
+          true,
+          options["alt"],
+          optionsStr,
+        );
+      } catch (error) {
+        clearCodeBlock(lines, start, end);
+        lines[end] += `\n` + `\`\`\`\n${error}\n\`\`\`  \n`;
+      }
     } else if (currentCodeChunk) {
       // code chunk
       if (currentCodeChunk.normalizedInfo.attributes["hide"]) {
@@ -304,17 +397,25 @@ export async function processGraphs(
           const $ = cheerio.load(currentCodeChunk.result); // xmlMode here is necessary...
           const svg = $("svg");
           if (svg.length === 1) {
-            const pngFilePath = (await convertSVGToPNGFile(
-              attributes["filename"],
-              $.html("svg"),
-              lines,
-              start,
-              end,
-              false,
-            )).replace(/\\/g, "/");
+            const pngFilePath = (
+              await convertSVGToPNGFile(
+                attributes["filename"],
+                $.html("svg"),
+                lines,
+                start,
+                end,
+                false,
+                options["alt"],
+                optionsStr,
+              )
+            ).replace(/\\/g, "/");
             result = `![](${pngFilePath})  \n`;
           }
-        } else if (attributes["cmd"].match(/^(la)?tex$/)) {
+        } else if (
+          (
+            extractCommandFromBlockInfo(currentCodeChunk.normalizedInfo) || ""
+          ).match(/^(la)?tex$/)
+        ) {
           // for latex, need to run it again to generate svg file in currect directory.
           result = await compileLaTeX(
             content,

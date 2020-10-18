@@ -1,11 +1,10 @@
 // tslint:disable:ban-types no-var-requires
-import { resolve } from "path";
 import * as YAML from "yamljs";
 
 import { render as renderDitaa } from "../ditaa";
 import computeChecksum from "../lib/compute-checksum";
 import { render as renderPlantuml } from "../puml";
-import { mkdirp, readFile } from "../utility";
+import { escapeString } from "../utility";
 import { toSVG as vegaToSvg } from "../vega";
 import { toSVG as vegaLiteToSvg } from "../vega-lite";
 import { Viz } from "../viz";
@@ -30,6 +29,9 @@ const supportedLanguages = [
   "mermaid",
   "puml",
   "plantuml",
+  "zenuml",
+  "seq",
+  "sequence-diagram",
   "wavedrom",
   "viz",
   "dot",
@@ -109,7 +111,19 @@ async function renderDiagram(
             normalizedInfo.attributes,
             normalizedInfo.language,
           ),
-        )}>${code}</div>`;
+        )}>${escapeString(code)}</div>`;
+        break;
+      }
+      case "zenuml":
+      case "seq":
+      case "sequence-diagram": {
+        // sequence-diagram is a web-component, so we just need to add this tag
+        $output = `<div ${stringifyAttributes(
+          ensureClassInAttributes(
+            normalizedInfo.attributes,
+            normalizedInfo.language,
+          ),
+        )}><sequence-diagram>${code}</sequence-diagram></div>`;
         break;
       }
       case "wavedrom": {
@@ -188,22 +202,11 @@ async function renderDiagram(
 
         // ditaa diagram
         const args = normalizedInfo.attributes["args"] || [];
-        const filename =
-          normalizedInfo.attributes["filename"] ||
-          `${computeChecksum(`${JSON.stringify(args)} ${code}`)}.png`;
-        await mkdirp(imageDirectoryPath);
 
-        const pathToPng = await renderDitaa(
-          code,
-          args,
-          resolve(imageDirectoryPath, filename),
-        );
-        const pathToPngWithoutVersion = pathToPng.replace(/\?[\d\.]+$/, "");
-        const pngAsBase64 = await readFile(pathToPngWithoutVersion, "base64");
-        $output = $("<img />").attr(
-          "src",
-          `data:image/png;charset=utf-8;base64,${pngAsBase64}`,
-        );
+        const svg = await renderDitaa(code, args);
+        $output = `<p ${stringifyAttributes(
+          normalizedInfo.attributes,
+        )}>${svg}</p>`;
         break;
       }
     }

@@ -32,6 +32,11 @@
 
   class PreviewController {
     /**
+     * VSCode API object got from acquireVsCodeApi
+     */
+    private vscodeAPI = null;
+
+    /**
      * Whether finished loading preview
      */
     private doneLoadingPreview: boolean = false;
@@ -108,12 +113,12 @@
     /**
      * Track the slide line number, and (h, v) indices
      */
-    private slidesData: Array<{
+    private slidesData: {
       line: number;
       h: number;
       v: number;
       offset: number;
-    }> = [];
+    }[] = [];
 
     /**
      * Current slide offset
@@ -138,6 +143,7 @@
     /**
      * Caches
      */
+    private zenumlCache = {};
     private wavedromCache = {};
     private flowchartCache = {};
     private sequenceDiagramCache = {};
@@ -246,14 +252,15 @@
      */
     private postMessage(command: string, args: any[] = []) {
       if (this.config.vscode) {
+        if (!this.vscodeAPI) {
+          // @ts-ignore
+          this.vscodeAPI = acquireVsCodeApi();
+        }
         // post message to vscode
-        window.parent.postMessage(
-          {
-            command: "did-click-link",
-            data: `command:_mume.${command}?${JSON.stringify(args)}`,
-          },
-          "file://",
-        );
+        this.vscodeAPI.postMessage({
+          command,
+          args,
+        });
       } else {
         window.parent.postMessage(
           {
@@ -382,26 +389,6 @@
                 name: "JPEG",
                 callback: () =>
                   this.postMessage("chromeExport", [this.sourceUri, "jpeg"]),
-              },
-            },
-          },
-          phantomjs_export: {
-            name: "PhantomJS",
-            items: {
-              phantomjs_pdf: {
-                name: "PDF",
-                callback: () =>
-                  this.postMessage("phantomjsExport", [this.sourceUri, "pdf"]),
-              },
-              phantomjs_png: {
-                name: "PNG",
-                callback: () =>
-                  this.postMessage("phantomjsExport", [this.sourceUri, "png"]),
-              },
-              phantomjs_jpeg: {
-                name: "JPEG",
-                callback: () =>
-                  this.postMessage("phantomjsExport", [this.sourceUri, "jpeg"]),
               },
             },
           },
@@ -656,7 +643,7 @@
     private renderMermaid() {
       return new Promise((resolve, reject) => {
         const mermaid = window["mermaid"]; // window.mermaid doesn't work, has to be written as window['mermaid']
-        const mermaidGraphs = this.hiddenPreviewElement.getElementsByClassName(
+        const mermaidGraphs = this.previewElement.getElementsByClassName(
           "mermaid",
         );
 
@@ -673,12 +660,22 @@
 
         if (!validMermaidGraphs.length) {
           return resolve();
-        }
-        try {
-          mermaid.init(null, validMermaidGraphs, () => {
-            resolve();
+        } else {
+          validMermaidGraphs.forEach((mermaidGraph, offset) => {
+            const svgId = "svg-mermaid-" + Date.now() + "-" + offset;
+            const code = mermaidGraph.textContent.trim();
+            try {
+              mermaid.render(svgId, code, (svgCode) => {
+                mermaidGraph.innerHTML = svgCode;
+              });
+            } catch (error) {
+              const noiseElement = document.getElementById("d" + svgId);
+              if (noiseElement) {
+                noiseElement.style.display = "none";
+              }
+              mermaidGraph.innerHTML = `<pre class="language-text">${error.toString()}</pre>`;
+            }
           });
-        } catch (error) {
           return resolve();
         }
       });
@@ -810,6 +807,43 @@
         }
 
         this.wavedromCache = wavedromCache;
+      }
+    }
+
+    /**UML
+     * render zenuml
+     */
+    private async renderZenUML() {
+      const els = this.hiddenPreviewElement.getElementsByClassName("zenuml");
+      if (els.length) {
+        const zenumlCache = {};
+        for (let i = 0; i < els.length; i++) {
+          const el = els[i] as HTMLElement;
+          el.id = "zenuml" + i;
+          const text = el.textContent.trim();
+          if (!text.length) {
+            continue;
+          }
+
+          if (text in this.zenumlCache) {
+            // load cache
+            const svg = this.zenumlCache[text];
+            el.innerHTML = svg;
+            zenumlCache[text] = svg;
+            continue;
+          }
+
+          try {
+            const content = `<sequence-diagram>${text}</sequence-diagram>`;
+            // window["WaveDrom"].RenderWaveForm(i, content, "wavedrom");
+            el.innerHTML = content;
+            zenumlCache[text] = el.innerHTML;
+          } catch (error) {
+            el.innerText = "Failed to eval ZenUML code. " + error;
+          }
+        }
+
+        this.zenumlCache = zenumlCache;
       }
     }
 
@@ -990,7 +1024,7 @@
     private async initEvents() {
       await Promise.all([
         this.renderMathJax(),
-        this.renderMermaid(),
+        this.renderZenUML(),
         this.renderWavedrom(),
       ]);
       this.previewElement.innerHTML = this.hiddenPreviewElement.innerHTML;
@@ -1000,6 +1034,7 @@
         this.renderFlowchart(),
         this.renderInteractiveVega(),
         this.renderSequenceDiagram(),
+        this.renderMermaid(),
       ]);
 
       this.setupCodeChunks();

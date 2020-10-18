@@ -3,6 +3,7 @@ import * as fs from "fs";
 import * as path from "path";
 import * as request from "request";
 import * as utility from "./utility";
+import { getExtensionConfigPath } from "./mume";
 
 // imgur api
 // referred from node-imgur:
@@ -31,7 +32,7 @@ async function addImageURLToHistory(imageFilePath, imageUrl) {
 
   // TODO: save to history
   const imageHistoryPath = path.resolve(
-    utility.extensionConfigDirectoryPath,
+    getExtensionConfigPath(),
     "./image_history.md",
   );
   let data: string;
@@ -95,12 +96,13 @@ function imgurUploadImage(filePath: string): Promise<string> {
 function smmsUploadImage(filePath: string): Promise<string> {
   return new Promise((resolve, reject) => {
     const headers = {
-      authority: "sm.ms",
+      "authority": "sm.ms",
       "user-agent": "mume",
+      "referer": "",
     };
     request.post(
       {
-        url: "https://sm.ms/api/upload",
+        url: "https://sm.ms/api/v2/upload",
         formData: { smfile: fs.createReadStream(filePath) },
         headers,
       },

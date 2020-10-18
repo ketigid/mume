@@ -19,7 +19,7 @@ import * as utility from "./utility";
  */
 function processMath(
   text: string,
-  { mathInlineDelimiters, mathBlockDelimiters },
+  { mathInlineDelimiters, mathBlockDelimiters, mathRenderingOnlineService },
 ): string {
   let line = text.replace(/\\\$/g, "#slash_dollarsign#");
 
@@ -72,7 +72,7 @@ function processMath(
       let math = $2;
       math = math.replace(/\n/g, "").replace(/\#slash\_dollarsign\#/g, "\\$");
       math = utility.escapeString(math);
-      return `<p align="center"><img src=\"https://latex.codecogs.com/gif.latex?${math
+      return `<p align="center"><img src=\"${mathRenderingOnlineService}?${math
         .trim()
         .replace(/ /g, "%20")}\"/></p>  \n`;
     },
@@ -91,7 +91,7 @@ function processMath(
       let math = $2;
       math = math.replace(/\n/g, "").replace(/\#slash\_dollarsign\#/g, "\\$");
       math = utility.escapeString(math);
-      return `<img src=\"https://latex.codecogs.com/gif.latex?${math
+      return `<img src=\"${mathRenderingOnlineService}?${math
         .trim()
         .replace(/ /g, "%20")}\"/>`;
     },
@@ -179,21 +179,33 @@ export async function markdownConvert(
     fileDirectoryPath,
     protocolsWhiteListRegExp,
     filesCache,
+    mathRenderingOption,
     mathInlineDelimiters,
     mathBlockDelimiters,
+    mathRenderingOnlineService,
     codeChunksData,
     graphsCache,
     usePandocParser,
+    imageMagickPath,
+    mermaidTheme,
+    onWillTransformMarkdown = null,
+    onDidTransformMarkdown = null,
   }: {
     projectDirectoryPath: string;
     fileDirectoryPath: string;
     protocolsWhiteListRegExp: RegExp;
     filesCache: { [key: string]: string };
+    mathRenderingOption: string;
     mathInlineDelimiters: string[][];
     mathBlockDelimiters: string[][];
+    mathRenderingOnlineService: string;
     codeChunksData: { [key: string]: CodeChunkData };
     graphsCache: { [key: string]: string };
     usePandocParser: boolean;
+    imageMagickPath: string;
+    mermaidTheme: string;
+    onWillTransformMarkdown?: (markdown: string) => Promise<string>;
+    onDidTransformMarkdown?: (markdown: string) => Promise<string>;
   },
   config: object,
 ): Promise<string> {
@@ -231,6 +243,10 @@ export async function markdownConvert(
 
   const useRelativeFilePath = !config["absolute_image_path"];
 
+  if (onWillTransformMarkdown) {
+    text = await onWillTransformMarkdown(text);
+  }
+
   // import external files
   const data = await transformMarkdown(text, {
     fileDirectoryPath,
@@ -242,8 +258,15 @@ export async function markdownConvert(
     protocolsWhiteListRegExp,
     imageDirectoryPath,
     usePandocParser,
+    onWillTransformMarkdown,
+    onDidTransformMarkdown,
   });
+
   text = data.outputString;
+
+  if (onDidTransformMarkdown) {
+    text = await onDidTransformMarkdown(text);
+  }
 
   // replace [MUMETOC]
   const tocBracketEnabled = data.tocBracketEnabled;
@@ -254,13 +277,13 @@ export async function markdownConvert(
       ordered: false,
       depthFrom: 1,
       depthTo: 6,
-      tab: "\t",
+      tab: "  ",
     });
     text = text.replace(/^\s*\[MUMETOC\]\s*/gm, "\n\n" + tocMarkdown + "\n\n");
   }
 
   // change link path to project '/' path
-  // this is actually differnet from pandoc-convert.coffee
+  // this is actually different from pandoc-convert.coffee
   text = processPaths(
     text,
     fileDirectoryPath,
@@ -269,37 +292,49 @@ export async function markdownConvert(
     protocolsWhiteListRegExp,
   );
 
-  text = processMath(text, { mathInlineDelimiters, mathBlockDelimiters });
+  text =
+    mathRenderingOption !== "None"
+      ? processMath(text, {
+          mathInlineDelimiters,
+          mathBlockDelimiters,
+          mathRenderingOnlineService,
+        })
+      : text;
 
   return await new Promise<string>((resolve, reject) => {
-    mkdirp(imageDirectoryPath, (error, made) => {
-      if (error) {
-        return reject(error.toString());
-      }
+    mkdirp(imageDirectoryPath)
+      .then(() => {
+        processGraphs(text, {
+          fileDirectoryPath,
+          projectDirectoryPath,
+          imageDirectoryPath,
+          imageFilePrefix: computeChecksum(outputFilePath),
+          useRelativeFilePath,
+          codeChunksData,
+          graphsCache,
+          imageMagickPath,
+          mermaidTheme,
+          addOptionsStr: false,
+        }).then(({ outputString }) => {
+          outputString = data.frontMatterString + outputString; // put the front-matter back.
 
-      processGraphs(text, {
-        fileDirectoryPath,
-        projectDirectoryPath,
-        imageDirectoryPath,
-        imageFilePrefix: computeChecksum(outputFilePath),
-        useRelativeFilePath,
-        codeChunksData,
-        graphsCache,
-      }).then(({ outputString }) => {
-        outputString = data.frontMatterString + outputString; // put the front-matter back.
-
-        fs.writeFile(
-          outputFilePath,
-          outputString,
-          { encoding: "utf-8" },
-          (error2) => {
-            if (error2) {
-              return reject(error2.toString());
-            }
-            return resolve(outputFilePath);
-          },
-        );
+          fs.writeFile(
+            outputFilePath,
+            outputString,
+            { encoding: "utf-8" },
+            (error2) => {
+              if (error2) {
+                return reject(error2.toString());
+              }
+              return resolve(outputFilePath);
+            },
+          );
+        });
+      })
+      .catch((error) => {
+        if (error) {
+          return reject(error.toString());
+        }
       });
-    });
   });
 }

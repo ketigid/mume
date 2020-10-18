@@ -1,13 +1,12 @@
 import * as child_process from "child_process";
 import * as fs from "fs";
-import * as matter from "gray-matter";
+import * as jsYAML from "js-yaml";
 import * as less from "less";
-import * as mkdirp_ from "mkdirp";
 import * as os from "os";
 import * as path from "path";
 import * as vm from "vm";
-
 import * as temp from "temp";
+import * as vscode from "vscode";
 temp.track();
 
 const TAGS_TO_REPLACE = {
@@ -42,6 +41,16 @@ export function unescapeString(str: string = ""): string {
   );
 }
 
+export interface ParserConfig {
+  onWillParseMarkdown?: (markdown: string) => Promise<string>;
+  onDidParseMarkdown?: (
+    html: string,
+    opts: { cheerio: CheerioAPI },
+  ) => Promise<string>;
+  onWillTransformMarkdown?: (markdown: string) => Promise<string>;
+  onDidTransformMarkdown?: (markdown: string) => Promise<string>;
+}
+
 /**
  * Do nothing and sleep for `ms` milliseconds
  * @param ms
@@ -63,11 +72,14 @@ export function parseYAML(yaml: string = "") {
     return {}
   }
   */
-  if (!yaml.startsWith("---")) {
-    yaml = "---\n" + yaml.trim() + "\n---\n";
+  if (yaml.startsWith("---")) {
+    yaml = yaml
+      .trim()
+      .replace(/^---\r?\n/, "")
+      .replace(/\r?\n---$/, "");
   }
   try {
-    return matter(yaml).data;
+    return jsYAML.safeLoad(yaml);
   } catch (error) {
     return {};
   }
@@ -139,42 +151,27 @@ export function execFile(
   });
 }
 
-export function mkdirp(dir: string): Promise<boolean> {
-  return new Promise((resolve, reject) => {
-    mkdirp_(dir, (error, made) => {
-      if (error) {
-        return reject(error);
-      } else {
-        return resolve(made);
-      }
-    });
-  });
-}
-
 /**
  * open html file in browser or open pdf file in reader ... etc
  * @param filePath
  */
-export function openFile(filePath) {
-  let cmd;
+export function openFile(filePath: string) {
   if (process.platform === "win32") {
-    cmd = "explorer.exe";
+    if (filePath.match(/^[a-zA-Z]:\\/)) {
+      // C:\ like url.
+      filePath = "file:///" + filePath;
+    }
+    if (filePath.startsWith("file:///")) {
+      return child_process.execFile("explorer.exe", [filePath]);
+    } else {
+      return child_process.exec(`start ${filePath}`);
+    }
   } else if (process.platform === "darwin") {
-    cmd = "open";
+    child_process.execFile("open", [filePath]);
   } else {
-    cmd = "xdg-open";
+    child_process.execFile("xdg-open", [filePath]);
   }
-
-  child_process.execFile(cmd, [filePath]);
 }
-
-/**
- * get "~/.mume" path
- */
-export const extensionConfigDirectoryPath = path.resolve(
-  os.homedir(),
-  "./.mume",
-);
 
 /**
  * get the directory path of this extension.
@@ -184,9 +181,10 @@ export const extensionDirectoryPath = path.resolve(__dirname, "../../");
 /**
  * compile ~/.mumi/style.less and return 'css' content.
  */
-export async function getGlobalStyles(): Promise<string> {
-  const homeDir = os.homedir();
-  const globalLessFilePath = path.resolve(homeDir, "./.mume/style.less");
+export async function getGlobalStyles(configPath): Promise<string> {
+  const globalLessFilePath = configPath
+    ? path.resolve(configPath, "./style.less")
+    : path.resolve(os.homedir(), "./.mume/style.less");
 
   let fileContent: string;
   try {
@@ -195,11 +193,11 @@ export async function getGlobalStyles(): Promise<string> {
     // create style.less file
     fileContent = `
 /* Please visit the URL below for more information: */
-/*   https://shd101wyy.github.io/markdown-preview-enhanced/#/customize-css */ 
+/*   https://shd101wyy.github.io/markdown-preview-enhanced/#/customize-css */
 
 .markdown-preview.markdown-preview {
   // modify your style here
-  // eg: background-color: blue;  
+  // eg: background-color: blue;
 }
 `;
     await writeFile(globalLessFilePath, fileContent, { encoding: "utf-8" });
@@ -227,9 +225,10 @@ export async function getGlobalStyles(): Promise<string> {
 /**
  * load ~/.mume/mermaid_config.js file.
  */
-export async function getMermaidConfig(): Promise<string> {
-  const homeDir = os.homedir();
-  const mermaidConfigPath = path.resolve(homeDir, "./.mume/mermaid_config.js");
+export async function getMermaidConfig(configPath): Promise<string> {
+  const mermaidConfigPath = configPath
+    ? path.resolve(configPath, "./mermaid_config.js")
+    : path.resolve(os.homedir(), "./.mume/mermaid_config.js");
 
   let mermaidConfig: string;
   if (fs.existsSync(mermaidConfigPath)) {
@@ -254,66 +253,15 @@ MERMAID_CONFIG = {
   return mermaidConfig;
 }
 
-/**
- * load ~/.mume/phantomjs_config.js file.
- */
-export async function getPhantomjsConfig(): Promise<object> {
-  const homeDir = os.homedir();
-  const phantomjsConfigPath = path.resolve(
-    homeDir,
-    "./.mume/phantomjs_config.js",
-  );
-
-  let phantomjsConfig: object;
-  if (fs.existsSync(phantomjsConfigPath)) {
-    try {
-      delete require.cache[phantomjsConfigPath]; // return uncached
-      phantomjsConfig = require(phantomjsConfigPath);
-    } catch (e) {
-      phantomjsConfig = {};
-    }
-  } else {
-    const fileContent = `/*
-configure header and footer (and other options)
-more information can be found here:
-    https://github.com/marcbachmann/node-html-pdf
-Attention: this config will override your config in exporter panel.
-
-eg:
-
-  let config = {
-    "header": {
-      "height": "45mm",
-      "contents": '<div style="text-align: center;">Author: Marc Bachmann</div>'
-    },
-    "footer": {
-      "height": "28mm",
-      "contents": '<span style="color: #444;">{{page}}</span>/<span>{{pages}}</span>'
-    }
-  }
-*/
-// you can edit the 'config' variable below
-let config = {
-}
-
-module.exports = config || {}
-`;
-    await writeFile(phantomjsConfigPath, fileContent, { encoding: "utf-8" });
-    phantomjsConfig = {};
-  }
-
-  return phantomjsConfig;
-}
-
 export const defaultMathjaxConfig = {
-  extensions: ["tex2jax.js"],
-  jax: ["input/TeX", "output/HTML-CSS"],
-  messageStyle: "none",
-  tex2jax: {
+  "extensions": ["tex2jax.js"],
+  "jax": ["input/TeX", "output/HTML-CSS"],
+  "messageStyle": "none",
+  "tex2jax": {
     processEnvironments: false,
     processEscapes: true,
   },
-  TeX: {
+  "TeX": {
     extensions: [
       "AMSmath.js",
       "AMSsymbols.js",
@@ -324,12 +272,17 @@ export const defaultMathjaxConfig = {
   "HTML-CSS": { availableFonts: ["TeX"] },
 };
 
+export const defaultKaTeXConfig = {
+  macros: {},
+};
+
 /**
- * load ~/.mume/mermaid_config.js file.
+ * load ~/.mume/mathjax_config.js file.
  */
-export async function getMathJaxConfig(): Promise<object> {
-  const homeDir = os.homedir();
-  const mathjaxConfigPath = path.resolve(homeDir, "./.mume/mathjax_config.js");
+export async function getMathJaxConfig(configPath): Promise<object> {
+  const mathjaxConfigPath = configPath
+    ? path.resolve(configPath, "./mathjax_config.js")
+    : path.resolve(os.homedir(), "./.mume/mathjax_config.js");
 
   let mathjaxConfig: object;
   if (fs.existsSync(mathjaxConfigPath)) {
@@ -362,9 +315,37 @@ module.exports = {
   return mathjaxConfig;
 }
 
-export async function getExtensionConfig(): Promise<object> {
-  const homeDir = os.homedir();
-  const extensionConfigFilePath = path.resolve(homeDir, "./.mume/config.json");
+/**
+ * load ~/.mume/katex_config.js file
+ */
+export async function getKaTeXConfig(configPath): Promise<object> {
+  const katexConfigPath = configPath
+    ? path.resolve(configPath, "./katex_config.js")
+    : path.resolve(os.homedir(), "./.mume/katex_config.js");
+
+  let katexConfig: object;
+  if (fs.existsSync(katexConfigPath)) {
+    try {
+      delete require.cache[katexConfigPath]; // return uncached
+      katexConfig = require(katexConfigPath);
+    } catch (e) {
+      katexConfig = defaultKaTeXConfig;
+    }
+  } else {
+    const fileContent = `
+module.exports = {
+  macros: {}
+}`;
+    await writeFile(katexConfigPath, fileContent, { encoding: "utf-8" });
+    katexConfig = defaultKaTeXConfig;
+  }
+  return katexConfig;
+}
+
+export async function getExtensionConfig(configPath): Promise<object> {
+  const extensionConfigFilePath = configPath
+    ? path.resolve(configPath, "./config.json")
+    : path.resolve(os.homedir(), "./.mume/config.json");
 
   let config: object;
   if (fs.existsSync(extensionConfigFilePath)) {
@@ -381,30 +362,12 @@ export async function getExtensionConfig(): Promise<object> {
   return config;
 }
 
-/**
- * Update ~/.mume/config.json
- * @param newConfig The new config.
- */
-export async function updateExtensionConfig(newConfig = {}): Promise<void> {
-  let config = await getExtensionConfig();
-  config = Object.assign(config, newConfig);
+export async function getParserConfig(configPath): Promise<ParserConfig> {
+  const parserConfigPath = configPath
+    ? path.resolve(configPath, "./parser.js")
+    : path.resolve(os.homedir(), "./.mume/parser.js");
 
-  const homeDir = os.homedir();
-  fs.writeFile(
-    path.resolve(homeDir, "./.mume/config.json"),
-    JSON.stringify(config, null, 2),
-    { encoding: "utf-8" },
-    () => {
-      return;
-    },
-  );
-}
-
-export async function getParserConfig(): Promise<object> {
-  const homeDir = os.homedir();
-  const parserConfigPath = path.resolve(homeDir, "./.mume/parser.js");
-
-  let parserConfig: object;
+  let parserConfig: ParserConfig;
   if (fs.existsSync(parserConfigPath)) {
     try {
       delete require.cache[parserConfigPath]; // return uncached
@@ -419,10 +382,20 @@ export async function getParserConfig(): Promise<object> {
       return resolve(markdown)
     })
   },
-  onDidParseMarkdown: function(html) {
+  onDidParseMarkdown: function(html, {cheerio}) {
     return new Promise((resolve, reject)=> {
       return resolve(html)
     })
+  },
+  onWillTransformMarkdown: function (markdown) {
+        return new Promise((resolve, reject) => {
+            return resolve(markdown);
+        });
+    },
+  onDidTransformMarkdown: function (markdown) {
+      return new Promise((resolve, reject) => {
+          return resolve(markdown);
+      });
   }
 }`;
     await writeFile(parserConfigPath, template, { encoding: "utf-8" });
@@ -450,15 +423,34 @@ export function isArrayEqual(x, y) {
   return true;
 }
 
+let _externalAddFileProtocolFunction: (
+  filePath: string,
+  vscodePreviewPanel: vscode.WebviewPanel,
+) => string = null;
+
+export function useExternalAddFileProtocolFunction(
+  func: (filePath: string, vscodePreviewPanel: vscode.WebviewPanel) => string,
+) {
+  _externalAddFileProtocolFunction = func;
+}
+
 /**
- * Add file:// to file path
+ * Add file:/// to file path
+ * If it's for VSCode preview, add vscode-resource:/// to file path
  * @param filePath
  */
-export function addFileProtocol(filePath: string): string {
-  if (!filePath.startsWith("file://")) {
-    filePath = "file:///" + filePath;
+export function addFileProtocol(
+  filePath: string,
+  vscodePreviewPanel?: vscode.WebviewPanel,
+): string {
+  if (_externalAddFileProtocolFunction) {
+    return _externalAddFileProtocolFunction(filePath, vscodePreviewPanel);
+  } else {
+    if (!filePath.startsWith("file://")) {
+      filePath = "file:///" + filePath;
+    }
+    filePath = filePath.replace(/^file\:\/+/, "file:///");
   }
-  filePath = filePath.replace(/^file\:\/+/, "file:///");
   return filePath;
 }
 
@@ -467,28 +459,41 @@ export function addFileProtocol(filePath: string): string {
  * @param filePath
  */
 export function removeFileProtocol(filePath: string): string {
-  if (process.platform === "win32") {
-    return filePath.replace(/^file\:\/+/, "");
-  } else {
-    return filePath.replace(/^file\:\/+/, "/");
-  }
+  // See https://regex101.com/r/YlpEur/8/
+  // - "file://///a///b//c/d"                   ---> "a///b//c/d"
+  // - "vscode-resource://///file///a///b//c/d" ---> "file///a///b//c/d"
+  const regex = /^(?:(?:file|(vscode)-(?:webview-)?resource|vscode--resource):\/+)(.*)/m;
+
+  return filePath.replace(regex, (m, isVSCode, rest) => {
+    if (isVSCode) {
+      // For vscode urls -> Remove host: `file///C:/a/b/c` -> `C:/a/b/c`
+      rest = rest.replace(/^file\/+/, "");
+    }
+
+    if (process.platform !== "win32" && ! rest.startsWith("/")) {
+      // On Linux platform, add a slash at the front
+      return "/" + rest;
+    } else {
+      return rest;
+    }
+  });
 }
 
 /**
  * style.less,
  * mathjax_config.js,
  * mermaid_config.js
- * phantomjs_config.js
  * config.json
  *
  * files
  */
+// @ts-ignore
 export const configs: {
   globalStyle: string;
   mathjaxConfig: object;
+  katexConfig: object;
   mermaidConfig: string;
-  phantomjsConfig: object;
-  parserConfig: object;
+  parserConfig: ParserConfig;
   /**
    * Please note that this is not necessarily MarkdownEngineConfig
    */
@@ -496,8 +501,8 @@ export const configs: {
 } = {
   globalStyle: "",
   mathjaxConfig: defaultMathjaxConfig,
+  katexConfig: defaultKaTeXConfig,
   mermaidConfig: "MERMAID_CONFIG = {startOnLoad: false}",
-  phantomjsConfig: {},
   parserConfig: {},
   config: {},
 };
@@ -570,6 +575,17 @@ export async function allowUnsafeEvalAndUnsafeNewFunctionAsync(
     global.Function = previousFunction;
   }
 }
+
+export const loadDependency = (dependencyPath: string) =>
+  allowUnsafeEval(() =>
+    allowUnsafeNewFunction(() =>
+      require(path.resolve(
+        extensionDirectoryPath,
+        "dependencies",
+        dependencyPath,
+      )),
+    ),
+  );
 
 export function Function(...args: string[]) {
   let body = "";
